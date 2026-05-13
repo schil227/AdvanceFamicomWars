@@ -154,8 +154,208 @@ Of course, in order for the economics to make sense, costs need to be updated. I
   <img src="images/new_mvmt_chart.PNG" alt="Cost Fix"/>
 </p>
 
-Generally speaking, the low-tier units get a boost, while the high-tier units get nerfed. Coupled with the first-strike change, these slight changes have a large impact.
+Generally speaking, the low-tier units get a boost, while the high-tier units get reduced. Coupled with the first-strike change, these slight changes have a large impact, and make movement a significantly more valuable stat.
 
 ### Establishing the "Triangle"
 
 As mentioned, the Fighter B unit was swapped out for a Battle Copter.
+
+<p align="center">
+  <img src="images/before_after_bcopter.PNG" alt="A comparison between Fighter B and Fighter B"/>
+  </br><i>The B stands for battle copter :^)</i>
+</p>
+
+And with this change, it's like the final piece falling into place to make the game whole and balanced. With a few exceptions, the game more-or-less plays like Advance Wars. The under-10000G-units contribute a lot more to the game, infantry walls are not nearly as impenetrable, you have the triangle, tech-ing up to expensive units, etc. It's not completely identical to Advance Wars; in fact with all the outstanding differences, I would say that it changes about as much as Advance Wars 2 or Dual Strike did from their predecessors.
+
+---
+
+For all the work I put into it, the actual list of changes feels small - but that's the nature of coding. There's a lot that went on behind the scenes, which I'll dive into.
+
+## Technical Details
+As always, for your (and mainly my) benefit, I'll outline "how" the changes were made. The First Strike changes were done in a previous patch and outlined in detail [here](https://github.com/schil227/FamicomWarsFirstStrike).
+
+### Changing the Damage 
+
+### Changing the Cost
+
+### Changing the Movement
+
+### Battle Copter
+
+A "unit" is made up of their statistics; damage, cost, movement, etc. So after making those changes, I had effectively turned Fighter B into a battle copter already - but it didn't *look* like one. Obviously I could'a just said "use your imagination" and called it a day, but part of me knew that, sooner or later, I would have to do it: I would have to finally try to figure out how graphics worked. 
+
+First off, if you're really interested, I would recommend looking at [Austin Morlan's Overview on NES Rendering](https://austinmorlan.com/posts/nes_rendering_overview/) to get an overview on how the NES Renders graphics. It goes into just the right amount of detail of how this stuff works, and I'm not gonna re-explain it, but I'll give some brief highlights:
+
+- A "Tile" is the smallest building block of an image, represented by 16 bytes.
+  - You make two square 8x8 "images" with the first and last 8 bytes, which have values between 0 and 1 (2-bit). 
+  - You then combine these 2-bit 8x8 images to create a 4-bit image. The value of the bits determine the color/transparency of the individual pixels in the "Tile"
+- Tile data is stored on the rom. The CPU on the NES tells the PPU which tile to write, and where.
+- These Tiles have an ID, and can be looked up in the Pattern Table
+
+<p align="center">
+  <img src="images/tile_data.PNG" alt="An image of the tile data on the ROM"/>
+  <br>I used Tile Layer Pro to edit the tile data. The main window shows the raw data from the rom file (the junk at the top is code). The lower part with the images (tiles) are where the Pattern Table starts.
+</p>
+
+- The Name Table is a 256x240 block of data, which represents a single *frame*
+  - Each byte in that 256x240 block of data has a tile ID
+  - The Nametable is further sub-divided into 4x4 byte blocks, which contain attributes about the stuff located within them (e.g. color palettes)
+- The tiles in the Name Table are *Background Tiles*
+  - Background Tiles do not move, and are rendered fairly quickly
+- Sprites, are made up of tiles *which move*
+
+(This is more or less all you need to know for this exercise.)
+
+So looking at the state of the world, Fighter B is represented as a 2x3 tile image, and there are two different kinds (one for Orange Star, one for Blue Moon). What I want is a battle copter in its place. Generally speaking this means I need to replace the existing Fighter B tiles with new beautiful art of a Battle Copter. Orange Star and Blue Moon also have two different helicopters, comprised of 2x4 tile images. So naturally, I just copied one of the existing helicopters (the one that looked more "agressive") and made that the defacto battle copter, then I copied the other helicopter (now known as the Transport Copter) over the other's "helicopter". This breaks the immersion, as now both armies use the exact same looking unit; but I'm not an artist ¯\\\_(ツ)_/¯
+
+<p align="center">
+  <img src="images/before_after_copter.PNG" alt="Comparison of the Fighter B to B Copter tile data before and after"/>
+  </br><i>(Left) Original unmodified ROM data, (right) Fighter B data is replaced with a B Copter, and Orange Star's B Copter design is made the same as Blue Moon's. </i>
+</p>
+
+So that's approximately 75% of the work done - indeed if you play the game now, and buy a b copter and engage in a fight, you would see... 75% of a battle copter. This is because the game represented the Fighter B unit as a 2 tall by 3 long tile cluster. So, now we go digging.
+
+Something to point out is, to my surprise, the tiles which make up the units in the battle scenes are *not* sprites, but actually background tiles. After quite a bit of slow-mo debugging, I found that they were shown in the Pattern Table (only briefly, after they get rendered the table switches to a different one, which has the tile data for the "commander cheerleaders"). Anyway from there, I was able to deduce the IDs of those tiles - for example, Orange Star's Fighter B's top left tile has id `$48` (followed by `$49`, `$4A`). The tile was stored in the PPU at address $002102 (this is the data for the frame that will be drawn, i.e. the nametable). By adding a jaunty breakpoint when that value changes, I found that it's being assigned that value at 01C437:
+
+*(from my notes, verbatim)*
+
+```
+STA 07 20 ; (STA PPU_DATA = #48, apparently)
+
+(Note this is located in ROM, as opposed to CPU or PPU)
+
+The line before it loads that tile (indirectly) from $0784!
+Well... well... well... what else is there?
+
+Bingo:
+$0783: 03
+$0784: 48 (!)
+$0785: 49 (!) 
+$0786: 4A (!) 
+$0787: 20
+
+```
+
+`$0783`, with its value of `#03` was actually being used to specify "the number of tiles in the row" - indeed `$48`, `$49`, and `$4A` all represent the top half of Fighter B. After some more digging, I found that that value was originally `#23`, located at `$0700`. After way too many minutes, it dawned on me that `#23` was the height and width of the unit sprite representation (2x3 tiles). Indeed, the values starting at `$0700` were `23 48 49 4A 58 59 5A`, which are the tile IDs of the Fighter B unit; 2x3, the top 3, then the bottom 3. This would need to be changed to be 2x4, and point to the additional tile values.
+
+Doing more debugging and tracing, I found what was going on. At `0149C0` the Unit Id was being loaded (in this case, the Fighter B's unit id is `#18`). An Arithmetic Shift Left was performed on it making it `#30`, and then the value was pushed into the Y register. Then, in basic terms, it looks up the *address* of where that sprite data is stored, *then* it looks at the content of the address to load the data (e.g. `23 48 49 ...`). In technical terms, it loads `$938A + Y` and `$938B + Y`, which produces values `#90` and `#94`, respectively. Those values combine to `$9490`, which is where the Fighter B sprite data is stored.
+
+To fix this, I just needed to write the new sprite data for the B Copter; I chose a block of free data at 017000 for Orange Star, and 017010 for Blue Moon:
+
+```
+Orange Star:
+OS: 24 48 49 4A C2 58 59 5A D2
+BM: 24 0D 0E 0F C3 1D 1E 1F D3
+```
+
+Then, I updated the addresses that the `$938A/$938B` were resolving (note: I didn't mention, that Blue Moon's Fighter B has a different ID (`#19`), but the change is effectively the same). For Orange Star, it now pointed to `$AFF0`, which resolved `24 48 49 4A C2 ...`, thus rendering the entire battle copter sprite.
+
+And after rendering 100% of the battle copter sprite... we're now 50% of the way there...
+
+<p align="center">
+  <img src="images/no_rotors.png" alt=""/>
+  </br><i>Can you spot it?</i>
+</p>
+
+Something which is unique to the helicopter unit compared to the other units of Famicom Wars is that it has two moving parts: the rotors. All other units are static background images, including the unit formally known as Fighter B. It took me a lot of debugging until I eventually found the code I was looking for, but you'll notice in the image above there are 10 units roughly in a line on each side of the battle field - well it just so happens that after rendering the battle field, we get this suspicious looking chunk of data in the CPU's RAM starting at `$1400`:
+
+<p align="center">
+  <img src="images/battle_data_ram.PNG" alt=""/>
+</p>
+
+After looking at this for a bit, some values become apparent: in the 00 column, we have the unit IDs of the Orange Star troops, in this case `$18` (OS Fighter B, now B copter). In column `$08`, we have the IDs of Blue Moon's T Copters (`$1D`). We also have some data inbetween: `$03`/`$04` (and `$0B`/`$0C` for BM) are the X/Y values for... the helicopter rotor sprites. This is funny, as we loaded a unit other than the helicopter, but right there we have the x/y coordinates of where the rotor sprites *would* be. In fact, if you change the ID in column `$00` to be the helicopter Id `$1C`, the rotor sprites pop up.
+
+<p align="center">
+  <img src="images/rotor_inf.gif" alt=""/>
+  </br><i>In fact, you can give all units rotors!</i>
+</p>
+
+So clearly, to enable rotors, I just need to "turn on" rotors for that Unit ID. Or restated, when the value of that particular address (e.g. `$400` for the first Orange Star unit) is the helicopter ID, it renders the rotor sprites.  So, I can set a breakpoint when $400 is read - cause the CPU needs to read that value in order to determine if it draws the sprites or not.
+
+Long story short, when the break point gets triggered, I look around and find that the ID is read, and "normalized" (meaning, a BM unit id is converted to a OS unit id by applying the `AND #FE` - so `$1D` is turned into `$1C`). Once normalized, that ID is given to the Y register, and then we do an indirect lookup at `$830E + Y` and `$830F + Y`, and we get two values. For *every unit except the helicopter*, these values are `$CE` and `$C6` (which if put together hi-lo make the address `$C6CE`). Then, the CPU jumps to this address and etc. etc. However when the unit *is* a helicopter, the values are `$08` and `$84` (`$0884`) - and jumping to this logic renders the sprites.
+
+So the fix is pretty simple. Thanks to normalizing the data for each unit, I just need to update the Fighter B unit's value. This is located just 4 address before the helicopter's (at `$8327` and `$8328`) to `$08` and `$84`. And, after that simple change...
+
+<p align="center">
+  <img src="images/misaligned_sprites.png" alt=""/>
+  </br><i>God damn it.</i>
+</p>
+
+Yet again, there's more work to be done - now, the offset of the rotor sprites is wrong. Looking at the offsets, it appears that the dimensions of the sprite come into play. The Y value ($4X3) is 1 tile length (-8 pixels) too far down, and the X value is 2 tile lengths too far to the left. To save time and energy, here are my notes verbatim from a code-walk I did, starting at loading the Unit ID at 01455A:
+
+```
+STA $0400,Y	; Y = 0, A = 18 (BCopter Id)
+LDX $0A		  ; Load $0A (#00) into X
+JSR $8824	  ; Some SR
+	-- SR --
+TAY			    ; put unit Id into Y (#18)
+LDA $00		  ; A becomes #01 (maybe stands for the 1st unit in the battle group?)
+PHA 		    ; Push Acc (#01) to stack
+LDA $01		  ; Loads #07 into A (no idea)
+PHA			    ; pushes Acc (#07) to stack
+TYA			    ; Acc gets unit id again (#18)
+AND #FE		  ; normalize it (OS -> OS, BM -> OS unit id)
+TAY		  	  ; put it back in Y (#18)
+LDA $96B2,Y	; -> $96CA => #38
+			      ; This is probably what needs to be changed; another lookup table
+STA $38		  ; Store it in $38 (value #38)			
+LDA $9590,Y ; -> $95A8 => (#EE)
+STA $00		  ; put it in $00 (#EE)
+LDA $96B3,Y	; -> $96CB (#38)
+			      ; complementary to the previous value loaded
+STA $39		  ; Store it in $39 (value #38)
+LDA $9591,Y	; -> $95A9 (#95)
+STA $01		  ; Stored in $01
+TXA			    ; Transfer X to A (#00)
+AND #0F		  ; Does an AND against it (still #00)
+ASL			    ; (#00) 
+TAY			    ; Y becomes #00
+LDA $00		  ; loads $95EE, which is also #00
+			      ; >> this, leads to probably yet another lookup table, but perhaps 
+			      ; exactly what I need to change. This did a lookup for BCopter, should probably be the same as TCopter ($95F2, $95F3, values #10 #10) <<
+ADC $38		  ; Adds $38 to A
+STA $38		  ; Store result back in $38
+INY			    ; inc Y to #01, go to next address
+LDA $00,Y	  ; -> $95EF, #00
+CLC			    ;
+ADC $39		  ; 
+STA $39		  ; Again, add value and store it back in $39 (value #38)
+PLA			    ; 
+STA $01		  ;
+PLA 		    ;
+STA $00		  ; 01 07 are back in $00, $01 again
+			      ; This SR looked up something from deep in memory, and assigned those values(plus some offset) to $38,$39
+	-- end SR --			
+LDX $04		  ; Load $04 (#09) into X
+LDY	$8643,X	; -> $864C (#00) into Y
+INY
+INY
+INY			    ; Increment Y to #03 (lines up with 4X3, the Y value for the sprite)
+LDA $38		  ; Loads the value at $38
+STA $0400,Y	; Puts it in the Y sprite offset value (!!)
+INY 		    ;
+LDA $39		  ;
+STA $0400,Y	; Stores it in the X sprite offset value (!!)
+
+There were 2 areas of interest, which were based off the unit id:
+$9590, $9591 (actual: $95A8, $95A9) : value of EE/95 for Bcopter, EE/95 TCopter
+$96B2, $96B3 (actual: $96CA, $96CB) : value of 38/38 for Bcopter, 30/46 TCopter
+```
+
+(This is, by the way, how I do most of my changes: I debug until I get to a point where I need to understand what's going on, then I walk through the code, annotating it, until I can tell a story that makes sense. For my Famicom Wars patches, I wrote over 1000 lines (10,206 words) of notes - the vast majority of which don't get included with these write-ups. If you intend to learn or make your own patches, don't be afraid to dig in like this.)
+
+Anyways - in the middle of this codewalk, it does yet another lookup by type id, and those values lead to the data that I'm interested in (the Y/X offsets for the rotor sprites.) Since the B Copter sprite is literally just a copy of one of the helicopter sprites, I can simply have it point to the same location in memory that's servicing the TCopter sprites. Thus,  `0156DA/0156DB` were changed to `$30` `$46`, and...
+
+<p align="center">
+  <img src="images/finished_bcopter.png" alt=""/>
+  </br><i>We got it.</i>
+</p>
+
+There were a few miscellaneous things that still needed to be updated; the "map" sprite tiles for Fighter B needed to become a B Copter - this was easily done by copyin' and pastin' the existing Helicopter tiles, but slapping a "B" in the bottom right corner (which, was my only art contribution). After going through and updating all the other tiles I could find with the appropriate new tiles - Famicom Wars officially had a Battle Copter.
+
+## Conclusion
+In terms of the development work on this: the First Strike patch crawled so Advance Famicom Wars could run. Doing First Strike first really got me interested in the mechanics of the game, and also made me realize that, frankly, it wasn't enough. But after studying the "code" for so long, I felt ready to really make a change to the formula. This was largely a technical exercise; I didn't need to come up with any "game design", I simply had to apply what was already done with Advance Wars, down to the detail of unit price and damage. This also marks my first patch which makes a graphical change - even though it was just copy and paste.
+
+As for the results, I'll say this:
+
+I played it, and I had fun.
