@@ -172,13 +172,185 @@ And with this change, it's like the final piece falling into place to make the g
 For all the work I put into it, the actual list of changes feels small - but that's the nature of coding. There's a lot that went on behind the scenes, which I'll dive into.
 
 ## Technical Details
-As always, for your (and mainly my) benefit, I'll outline "how" the changes were made. The First Strike changes were done in a previous patch and outlined in detail [here](https://github.com/schil227/FamicomWarsFirstStrike).
+As always, for your (and mainly my) benefit, I'll outline "how" the changes were made. The First Strike changes were done in a previous patch and outlined in detail [here](https://github.com/schil227/FamicomWarsFirstStrike). Outside of that, it's worth noting that all the changes made for this patch had something to do with changing the properties of units; nothing "structural". Each unit has a unique id, which is often used when looking up unit properties. Here's a handy table mapping the units and their ids:
+
+<p align="center">
+  <img src="images/unit_ids.PNG" alt="Unit Id table"/>
+  </br><i>It starts with $02, because it does.</i>
+</p>
+
+From what I can tell, the distinction between OS and BM unit ids is largely for graphical purposes. An OS infantry has the same properties as a BM infantry, they just look different. As such, the type of the unit will often be "normalized" - that is, a BM unit id is converted to a OS unit id by applying `AND #FE` - so (for example) `$1D` is turned into `$1C`. Anyway armed with this knowledge, we can look into changing the damage output for each of the units.
 
 ### Changing the Damage 
+The first step in making the game more tolerable was updating the damage which all the units did. As a part of my research for the First Strike patch, I found that the Damage Table was located at `$E4E2`. I already covered how the table works [here](https://github.com/schil227/FamicomWarsFirstStrike#the-damage-lookup-table), but basically it functions by taking the two unit ids (attacker and defender), combining them into an index and storing it into the `Y` register, and then `$E4E2 + Y` is the hex value for the damage that the attacker does to the defender. There are 16 units, which each do (or, don't do) damage to 16 other units, which means we can take the 256 values starting at `$E4E2`, and create a table from them. These are the values:
+
+```
+2D 23 05 0F 19 05 0F 05 0F 19 05 05 05 0F 05 05 
+37 2D 19 23 2D 23 2D 2D 2D 5F 0F 19 0F 19 05 05 
+55 5F 2D 41 4B 55 5F 55 4B 55 0F 19 0F 19 0F 0F 
+37 2D 19 2D 5F 37 4B 55 4B 41 0F 19 0F 19 0F 0F 
+55 5F 0F 19 2D 23 23 23 2D 37 0F 19 0F 0F 05 05 
+2D 23 37 41 41 2D 37 37 41 41 00 00 00 00 0F 19 
+2D 23 2D 37 37 23 2D 2D 41 37 00 00 00 00 0F 19 
+00 00 00 00 00 00 00 00 00 00 41 4B 41 4B 00 00 
+00 00 00 00 00 00 00 00 00 00 41 4B 41 4B 00 00 
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+37 37 05 0F 19 0F 19 0F 0F 2D 2D 41 5F 41 05 0F 
+2D 2D 05 05 0F 05 0F 0F 0F 23 0F 2D 41 4B 05 05 
+37 37 41 4B 4B 41 4B 41 41 4B 00 00 00 00 2D 41 
+37 37 05 05 0F 05 05 0F 0F 2D 05 05 05 2D 05 05 
+55 55 55 5F 5F 55 55 55 5F 5F 41 4B 41 4B 2D 4B 
+0F 0F 19 19 19 19 19 19 19 19 2D 41 37 41 19 2D
+```
+
+And, to fancify it up a bit:
+
+<p align="center">
+  <img src="images/old_damage_table_hex.PNG" alt="Vanilla damage values, in hex"/>
+  </br><i>Note: the decimal values are posted in a previous section.</i>
+</p>
+
+The solution is very straightforward; just replace these values with new ones. As mentioned, I based my changes off the data from Advance Wars, while only modifying a few things (e.g. APC does Recon damage, receives APC damage). After filling out the table in decimal (posted in a previous section), I used a DEC2HEX macro and converted the values, and ended up with this:
+
+<p align="center">
+  <img src="images/new_damage_table_hex.PNG" alt="New damage values, in hex"/>
+  </br><i>Note: the decimal values are posted in a previous section.</i>
+</p>
+
+And so, I simply overwrote that block of code with the new one, and the damage is updated. 
 
 ### Changing the Cost
 
+Conceptually, the change for this is easy - somewhere in the code, there is some number (or collection of numbers) which represent how much the unit costs, and all I need to do is change that number. The difficulty comes in figuring out *where* that number is stored, and as it turns out, *how* it's stored.
+
+The investigation step started out pretty basic; looking through the zero-page while moving around the unit menu, and seeing what happens when a unit gets purchased. This lead to setting breakpoints when some values got changed, and after wandering through a lot of code, eventually I came to something interesting: the unit "objects". This code started at `$E226` (with the infantry unit), and contained a bunch of values. I'll stick two of them next to each other:
+        `00 01 02 03 04 05 06 07 08 ...`
+Inf   : `02 03 01 01 02 0A 00 64 09 01 01 63 00 00 00 00 08 12 17 0F 0A 17 1D 1B 22`
+Mech  : `02 02 01 01 02 0A 00 C8 03 03 01 46 00 00 00 00 08 0E 17 10 12 17 0E 0E 1B`
+Tank A: `06 06 04 01 03 0A 06 40 06 05 01 46 00 00 00 00 06 1D 0A 17 14 FF 0A 06 05`
+
+Just from these 3 data points, we can start to make some guesses at what this data means if we start thinking about some of the known unit properties. For example, we know that an infantry has 3 movement, mechs have 2 movement, and Tank A (currently) has 6 movement. Infantry and mechs can move on mountains, whereas tanks cannot - they have different movement type. Looking at the the first two values for these objects, we can start to draw a conclusion that the 2nd value is probably the movement for the unit, and the first value *could* be the movement type.
+
+After *more* code analysis and debugging, I concluded that the 5th, 6th, and 7th values have something to do with the cost of the unit... but I couldn't really see how. All the unit objects have `0A` as the 5th value, the 6th value was usually a low number, and greater for the more expensive units (e.g. Tank A is worth 16000G and has a value of `$06`), and the 7th value also seemed kinda proportional. The cost of the units (the greatest being 28800G) is clearly too big to fit in a single byte of data, so it makes sense that the 6th number was the "hi" byte and the 7th was the "lo" byte, and together they would make the total. However when looking at these values, I couldn't make sense of it - because there was some mysterious algorithm that those values were being pumped into, and then *the result* was equal to the cost of the unit. 
+
+Taking a look at my (verbatim) notes, this is the Mysterious Algorithm:
+
+```
+ Back to cost: the 5th value of these units is 0A, which is binary for 10. This makes me think that maybe the mystery JSR is a conversion step... multiplying the value by 10, maybe?
+
+[...]
+
+ For Tank B, lo value 58 is in $00 first against $01's 0A:
+
+
+LDA #00		; Load the number 0 into acc
+STA $02		; Store it in $02
+LDX #08		; Load 8 into X (smells like number shifting)
+LSR $00		; shift right 58 -> 2C (0010 1100)
+BCC	03		; Branch if Carry is clear
+			    ; In this case, it is, so it jumps ahread
+CLC			  ; Clear Carry
+ADC $01		; Add #0A to the Accumulator			
+ROR			  ; rotate Acc right; Acc is 0, no change, no clear flag
+ROR $02		; No change cause clear flag is empty, also 0
+DEX			  ; Decrement X => 7
+BNE F3		; jump back to LSR
+
+... wtf is this shit doing?
+```
+
+(For more context, this sub routine is called twice. The first time, the "lo" cost value is stored in `$00` and `#0A` is stored in `$01`, and then the 2nd time, the "hi" value is stored in `$00`.)
+
+Clearly, I conceptually didn't understand what was going on here. It wasn't until I wrote it alllll out on paper, all 8 iterations of the loop, until I finally understood: it was indeed multiplying the input value by 10. Upon realizing this, I googled it, and sure enough, this is an implementation of the [Shift and Add](https://www.lysator.liu.se/~nisse/misc/6502-mul.html) algorithm. 
+
+The value of the unit is stored at 1/10th its value, so when the player buys a unit, it must multiply that value (bytes 6 and 7 in the object) by `#0A` (ten) to get the true price. This becomes clear if we do some conversions: for infantry, `$0064` is 100, for mechs `$00C8` is 200, Tank A `$0640` is 1,600, etc. Also it makes sense that it would reduce the value like so, as when the unit gets healed it needs to multiply that value by 2 to charge the player for the repair; it would take up unnecessary space and "de-normalize" the data to have two separate values.
+
+Anyways - the fix was now clear: for each unit object that needed a price change, I just needed to change the values, like so:
+
+```
+ Price corrections and locations:
+ Mech: 200 -> 300
+	$E240: $00 -> $01
+  $E241: $C8 -> $2C
+ 
+ Tank B: 600 -> 700
+	$E275: $02 -> $02
+	$E276: $58 -> $BC
+
+ APC: 420 -> 500
+	$E289: $A4 -> $F4
+ 
+ Rockets: 1300 -> 1500
+	$E2A2: $05 -> $05
+	$E2A3: $14 -> $DC
+ 
+ Artillery: 550 -> 600
+	$E2BB: $02 -> $02
+	$E2BC: $26 -> $58
+	
+ AA: 550 -> 800
+	$E2EE: $02 -> $03
+	$E2EF: $26 -> $20
+	
+ Fighter: 2200 -> 2000
+	$E31C: $08 -> $07
+	$E31D: $98 -> $D0
+	
+ BCopter: 1500 -> 900
+	$E334: $05 -> $03
+	$E335: $DC -> $84
+	
+ TCopter: 400 -> 500
+	$E364: $01 -> $01
+	$E365: $90 -> $F4
+	
+ Bomber: 2000 -> 2200
+	$E34C: $07 -> $08
+	$E34D: $D0 -> $98
+	
+ Battleship: 2880 -> 2800
+	$E37A: $0B -> $0A
+	$E37B: $40 -> $F0
+	
+ Lander: 1850 -> 1200
+	$E38F: $07 -> $04
+	$E390: $3A -> $B0
+```
+
+And like that, the economy is complete. 
+
 ### Changing the Movement
+
+As mentioned in the previous section, the first two values in the unit "object" are indeed the movement data. Here's a reminder:
+
+        `00 01 02 ...`
+Inf   : `02 03 01 ...`
+Mech  : `02 02 01 ...`
+Tank A: `06 06 04 ...`
+
+So the change was fortunately trivial: just updated the units which need to be updated, with the new values:
+
+```
+ Unit mvmt type & distance
+ Inf: 2, 3 (Location: E226)
+ Mech: 2, 2 (Location: E23A)
+ TankA: 6, 5 (changed)
+ TankB: 6, 6 (changed)
+ APC: 6, 6 (Location: E282)
+ Rockets: 4, 4 (Location: E29C) => 5
+ Artillery: 4, 5 (Location: E2B5)
+ Missiles: 8, 4 (Location: $E2CE)
+ AA: 8, 5 (Location: $E2E8) => 6
+ Supply: C, 5 (Location: $E2FF)
+ Fighter: E, A (Location: $E316) => 9
+ BCopter: E, A (Location: $E32E) => 6
+ Bomber: E, 8 (Location: $E346) => 7
+ TCopter: E, 6 (Location: $E35E)
+ Battleship: A, 6 (Location $E374) => 5
+ Lander: A, 5 (location: $E389) => 6
+```
+
+And, the units have the proper movement.
 
 ### Battle Copter
 
@@ -267,12 +439,12 @@ After looking at this for a bit, some values become apparent: in the 00 column, 
 
 <p align="center">
   <img src="images/rotor_inf.gif" alt=""/>
-  </br><i>In fact, you can give all units rotors!</i>
+  </br><i>Fun fact: all units can have rotors</i>
 </p>
 
-So clearly, to enable rotors, I just need to "turn on" rotors for that Unit ID. Or restated, when the value of that particular address (e.g. `$400` for the first Orange Star unit) is the helicopter ID, it renders the rotor sprites.  So, I can set a breakpoint when $400 is read - cause the CPU needs to read that value in order to determine if it draws the sprites or not.
+So clearly, to enable rotors, I just need to "turn on" rotors for that Unit ID. Or restated, when the value of that particular address (e.g. `$400` for the first Orange Star unit) is the helicopter ID, it renders the rotor sprites.  So, I can set a breakpoint when `$400` is read - cause the CPU needs to read that value in order to determine if it draws the sprites or not.
 
-Long story short, when the break point gets triggered, I look around and find that the ID is read, and "normalized" (meaning, a BM unit id is converted to a OS unit id by applying the `AND #FE` - so `$1D` is turned into `$1C`). Once normalized, that ID is given to the Y register, and then we do an indirect lookup at `$830E + Y` and `$830F + Y`, and we get two values. For *every unit except the helicopter*, these values are `$CE` and `$C6` (which if put together hi-lo make the address `$C6CE`). Then, the CPU jumps to this address and etc. etc. However when the unit *is* a helicopter, the values are `$08` and `$84` (`$0884`) - and jumping to this logic renders the sprites.
+Long story short, when the break point gets triggered, I look around and find that the ID is read, and "normalized" to an OS id. Once normalized, that ID is given to the Y register, and then we do an indirect lookup at `$830E + Y` and `$830F + Y`, and we get two values. For *every unit except the helicopter*, these values are `$CE` and `$C6` (which if put together hi-lo make the address `$C6CE`). Then, the CPU jumps to this address and etc. etc. However when the unit *is* a helicopter, the values are `$08` and `$84` (`$0884`) - and jumping to this logic renders the sprites.
 
 So the fix is pretty simple. Thanks to normalizing the data for each unit, I just need to update the Fighter B unit's value. This is located just 4 address before the helicopter's (at `$8327` and `$8328`) to `$08` and `$84`. And, after that simple change...
 
@@ -342,7 +514,7 @@ $9590, $9591 (actual: $95A8, $95A9) : value of EE/95 for Bcopter, EE/95 TCopter
 $96B2, $96B3 (actual: $96CA, $96CB) : value of 38/38 for Bcopter, 30/46 TCopter
 ```
 
-(This is, by the way, how I do most of my changes: I debug until I get to a point where I need to understand what's going on, then I walk through the code, annotating it, until I can tell a story that makes sense. For my Famicom Wars patches, I wrote over 1000 lines (10,206 words) of notes - the vast majority of which don't get included with these write-ups. If you intend to learn or make your own patches, don't be afraid to dig in like this.)
+(This is, by the way, how I do most of my changes: I debug until I get to a point where I need to understand what's going on, then I walk through the code, annotating it, until I can "tell a story" that makes sense. For my Famicom Wars patches, I wrote over 1000 lines (10,206 words) of notes - the vast majority of which don't get included with these write-ups. If you intend to learn or make your own patches, don't be afraid to dig in like this.)
 
 Anyways - in the middle of this codewalk, it does yet another lookup by type id, and those values lead to the data that I'm interested in (the Y/X offsets for the rotor sprites.) Since the B Copter sprite is literally just a copy of one of the helicopter sprites, I can simply have it point to the same location in memory that's servicing the TCopter sprites. Thus,  `0156DA/0156DB` were changed to `$30` `$46`, and...
 
@@ -353,9 +525,21 @@ Anyways - in the middle of this codewalk, it does yet another lookup by type id,
 
 There were a few miscellaneous things that still needed to be updated; the "map" sprite tiles for Fighter B needed to become a B Copter - this was easily done by copyin' and pastin' the existing Helicopter tiles, but slapping a "B" in the bottom right corner (which, was my only art contribution). After going through and updating all the other tiles I could find with the appropriate new tiles - Famicom Wars officially had a Battle Copter.
 
+Bonus note: I decided against redesigning the TCopter for two reasons: one, I'm not an artist - and two, it would require some extra special hacking to get double the rotor sprites for that "Chinook" style helicopter. If someone wants to add that, go for it.
+
+### Bonus: English Translation Patch
+
+So, unfortunately, the english patch bumps into some of these changes and overwrites the data. I assume that this is because the english names of the units require extra data (or whatever), and that required changing the unit "objects". So effectively, applying the english patch overwrites the cost and movement changes. Thus, I created the 2nd post-install patch which fixes the data after the english patch is applied. Really it's just doing the same stuff I outlined above (changing unit properties), except a few values are in different locations. Most notably, the battleship and transport objects were moved to a different location, so I had to do a little hunting, but that was alright. 
+
 ## Conclusion
-In terms of the development work on this: the First Strike patch crawled so Advance Famicom Wars could run. Doing First Strike first really got me interested in the mechanics of the game, and also made me realize that, frankly, it wasn't enough. But after studying the "code" for so long, I felt ready to really make a change to the formula. This was largely a technical exercise; I didn't need to come up with any "game design", I simply had to apply what was already done with Advance Wars, down to the detail of unit price and damage. This also marks my first patch which makes a graphical change - even though it was just copy and paste.
+Thanks if you read this all the way through; this one felt a bit more boring and long-winded than my other write-ups. 
+
+<p align="center">
+  <img src="images/hq_cap.gif" alt="victory"/>
+</p>
+
+In terms of the development work on this: doing First Strike first really got me interested in the mechanics of the game, and also made me realize that, frankly, it wasn't enough. But after studying the "code" for so long, I felt ready to really make a change to the "formula". This was largely a technical exercise; I didn't need to come up with any "game design", I simply had to apply what was already done with Advance Wars, down to the detail of unit price and damage. This also marks my first patch which makes a graphical change - even though it was just copy and paste.
 
 As for the results, I'll say this:
 
-I played it, and I had fun.
+I played it, and I had fun. I hope you do to!
