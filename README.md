@@ -51,7 +51,7 @@ Shortly after rolling out the First Strike patch, I (tried) to play a bit of Fam
 There are some things one could extract from this, but one of the biggest is that, pound-for-pound the infantry is far and away the best unit. For one, they can attack everything, from battleships to bombers. In vanilla Famicom Wars, a bomber (worth 20000G) can attack an infantry (1000G), and do a *pathetic* 55% damage (that's 550G). Meanwhile, since there's no first-strike, the infantry attacks the bomber, and does %5 damage... which is 1000G.
 
 <p align="center">
-  <img src="images/nice_shot.PNG" alt="The economics, for scale."/>
+  <img src="images/nice_shot.png" alt="The economics, for scale."/>
   </br>
    The rifle is valued at £3,700,000 (<a href="https://metro.co.uk/2022/09/06/ukrainian-pensioner-awarded-medal-after-shooting-down-russian-aircraft-17306308/">link</a>)
 </p>
